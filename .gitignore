@@ -1,0 +1,11 @@
+# Ignore everything by default
+*
+
+# Allow only shell scripts, Python scripts, and markdown files
+!*.sh
+!*.py
+!*.md
+
+# Also allow .gitignore itself
+!.gitignore
+
