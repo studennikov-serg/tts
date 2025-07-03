@@ -6,6 +6,7 @@ import requests
 import re # Import regex module for sentence splitting
 import subprocess # For calling external commands like ffmpeg
 import argparse # For command-line argument parsing
+import textwrap # For wrapping long sentences
 
 # Import for non-blocking single character input
 try:
@@ -56,8 +57,9 @@ def _getch():
         return ch
 
 def clear_console():
-    """Clears the terminal console."""
-    os.system('cls' if os.name == 'nt' else 'clear')
+    """Clears the terminal console only if connected to a TTY."""
+    if sys.stdout.isatty():
+        os.system('cls' if os.name == 'nt' else 'clear')
 
 def exit_script(save_position=False, current_index=0):
     """Exits the script gracefully, optionally saving the current position."""
@@ -140,6 +142,10 @@ def read_sentences():
     try:
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             content = f.read()
+        
+        # Remove Byte Order Mark (BOM) if present, common with some UTF-8 files
+        if content.startswith('\ufeff'):
+            content = content.lstrip('\ufeff')
 
         # Regex to split sentences, keeping the delimiter.
         # This one handles common cases and tries to avoid splitting on abbreviations.
@@ -287,11 +293,44 @@ def play_audio(filepath):
 
 
 def display_sentence(sentences, current_index, recorded=False):
-    """Clears console and displays the current sentence (without sentence number)."""
-    clear_console()
-    if recorded:
-        print("*", end=" ") # Print asterisk for recorded sentences
-    print(sentences[current_index])
+    """
+    Clears console and displays the current sentence.
+    Wraps long sentences.
+    """
+    clear_console() # Clear console only when displaying the sentence
+    
+    # Get terminal width for wrapping
+    try:
+        terminal_width = os.get_terminal_size().columns
+    except OSError:
+        terminal_width = 80 # Default if cannot determine terminal size
+
+    # Prepare sentence text: remove internal newlines before wrapping
+    sentence_text = sentences[current_index].replace('\n', ' ')
+
+    prefix = "* " if recorded else ""
+    # Use textwrap to format the sentence
+    wrapped_sentence = textwrap.fill(sentence_text, width=terminal_width - len(prefix))
+    
+    print(f"{prefix}{wrapped_sentence}")
+
+
+def print_interactive_help():
+    """Prints the key bindings and basic usage notes for the interactive mode."""
+    print("\n--- Interactive Controls ---")
+    print("Keys:")
+    print("  J (or j): Move to the previous sentence.")
+    print("  L (or l): Move to the next sentence (saves position).")
+    print("  Spacebar: Record (synthesize) current sentence and play audio.")
+    print("  P (or p): Play recorded audio of current sentence (if available).")
+    print("  R (or r): Reload data.txt (preserves cursor position).")
+    print("  Q (or q): Quit script (saves last position).")
+    print("  H (or h): Show this help message again.")
+    print("  Ctrl+C: Quit script WITHOUT saving last position.")
+    print("\nNotes:")
+    print("  * indicates a recorded sentence.")
+    print("  Errors will be printed briefly when they occur.")
+    print("--------------------------")
 
 
 def print_readme():
@@ -316,8 +355,10 @@ This Python script helps you convert text sentences from a file into audio WAV f
 -   **`J` (or `j`):** Move to the previous sentence (if available).
 -   **`L` (or `l`):** Move to the next sentence (if available). Saves current position when moving to the next.
 -   **Spacebar (` `):** Record (synthesize) the current sentence. If already recorded, it will re-record and play the audio.
+-   **`P` (or `p`):** Play recorded audio of current sentence (if available).
 -   **`R` (or `r`):** Reload `data.txt`. The cursor (current sentence position) will remain at its current index if possible, otherwise it will adjust to the new range.
 -   **`Q` (or `q`):** Quit the script and save the last processed sentence's position.
+-   **`H` (or `h`):** Show this help message.
 -   **`Ctrl+C`:** Quit the script *without* saving the last processed sentence's position.
 
 ## Setup:
@@ -446,17 +487,12 @@ def main():
         sys.exit(0) # Propagate the exit
 
 
-    # Print initial sentence number and keys once at the start (before the first clear_console)
+    # Print initial sentence number and simple instruction
     total_sentences = len(sentences)
     if total_sentences > 0:
         print(f"Starting at Sentence {current_sentence_index + 1} / {total_sentences}")
-    print("------------------------------------------------------------------")
-    print("Keys: J prev | L next | Space record/play | R reload | Q quit (Ctrl+C to exit without saving)")
-    print("------------------------------------------------------------------")
+    print("For help press 'h'")
     time.sleep(1) # Give user a moment to read initial message
-
-    # --- Clear the console once before starting the interactive part of the loop ---
-    clear_console()
 
     # Main interactive loop
     while True:
@@ -477,9 +513,6 @@ def main():
                     # Preserve cursor position logic already handled after read_sentences
                     if current_sentence_index >= len(sentences):
                         current_sentence_index = len(sentences) - 1 if len(sentences) > 0 else 0
-                    # Update audio existence status for the new current sentence after reload
-                    sentence_audio_exists = os.path.exists(os.path.join(AUDIO_DIR, f"{current_sentence_index + 1:03d}.wav"))
-                    
                     # After reload, print sentence number to indicate new state (as requested)
                     if len(sentences) > 0:
                         clear_console() # Clear to show the new count
@@ -509,8 +542,16 @@ def main():
                 if audio_data:
                     filepath = save_audio(audio_data, current_sentence_index)
                     if filepath:
-                        # sentence_audio_exists will be re-calculated at start of next loop iteration
                         play_audio(filepath) # Play the newly recorded audio
+            elif key == 'p': # Play recorded audio
+                filepath = os.path.join(AUDIO_DIR, f"{current_sentence_index + 1:03d}.wav")
+                if os.path.exists(filepath):
+                    play_audio(filepath)
+                else:
+                    clear_console()
+                    print(f"No recorded audio found for sentence {current_sentence_index + 1}.")
+                    print("\nPress any key to continue...")
+                    _getch() # Wait for user to acknowledge
             elif key == 'r': # Reload text file
                 _ffmpeg_error_printed = False # Reset ffmpeg error flag on reload
                 old_index = current_sentence_index
@@ -534,6 +575,14 @@ def main():
                     sys.exit(0) # Propagate exit if read_sentences fails critically
             elif key == 'q': # Quit
                 exit_script(save_position=True, current_index=current_sentence_index) # Save on 'q'
+            elif key == 'h': # Show help
+                clear_console()
+                print_interactive_help()
+                # Wait for user to acknowledge, then clear and redraw current sentence
+                print("\nPress any key to continue...")
+                _getch()
+                clear_console() # Clear after help
+                # The loop will naturally call display_sentence next
 
         except KeyboardInterrupt:
             # Handle Ctrl+C gracefully without saving position as requested
@@ -568,8 +617,10 @@ This Python script helps you convert text sentences from a file into audio WAV f
 -   **`J` (or `j`):** Move to the previous sentence (if available).
 -   **`L` (or `l`):** Move to the next sentence (if available). Saves current position when moving to the next.
 -   **Spacebar (` `):** Record (synthesize) the current sentence. If already recorded, it will re-record and play the audio.
+-   **`P` (or `p`):** Play recorded audio of current sentence (if available).
 -   **`R` (or `r`):** Reload `data.txt`. The cursor (current sentence position) will remain at its current index if possible, otherwise it will adjust to the new range.
 -   **`Q` (or `q`):** Quit the script and save the last processed sentence's position.
+-   **`H` (or `h`):** Show this help message.
 -   **`Ctrl+C`:** Quit the script *without* saving the last processed sentence's position.
 
 ## Setup:
